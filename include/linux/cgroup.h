@@ -113,6 +113,11 @@ int cgroup_rm_cftypes(struct cftype *cfts);
 void cgroup_file_notify(struct cgroup_file *cfile);
 
 int task_cgroup_path(struct task_struct *task, char *buf, size_t buflen);
+#ifdef VENDOR_EDIT
+// zhoumingjun@Swdp.shanghai, 2018/7/10, get task cgroup by rootname for elsa
+// huangliang@Swdp.shanghai, 2018/7/23, porting form kernel 4.9 to 4.4
+int task_cgroup_path_by_root(struct task_struct *task, const char *rootname, char *buf, size_t buflen);
+#endif
 int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry);
 int proc_cgroup_show(struct seq_file *m, struct pid_namespace *ns,
 		     struct pid *pid, struct task_struct *tsk);
@@ -637,6 +642,11 @@ static inline void pr_cont_cgroup_path(struct cgroup *cgrp)
 	pr_cont_kernfs_path(cgrp->kn);
 }
 
+static inline struct psi_group *cgroup_psi(struct cgroup *cgrp)
+{
+	return &cgrp->psi;
+}
+
 static inline void cgroup_init_kthreadd(void)
 {
 	/*
@@ -687,6 +697,16 @@ static inline int cgroup_init(void) { return 0; }
 static inline void cgroup_init_kthreadd(void) {}
 static inline void cgroup_kthread_ready(void) {}
 static inline union kernfs_node_id *cgroup_get_kernfs_id(struct cgroup *cgrp)
+{
+	return NULL;
+}
+
+static inline struct cgroup *cgroup_parent(struct cgroup *cgrp)
+{
+	return NULL;
+}
+
+static inline struct psi_group *cgroup_psi(struct cgroup *cgrp)
 {
 	return NULL;
 }

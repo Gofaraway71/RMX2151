@@ -39,6 +39,7 @@
 #include <linux/crc16.h>
 #include <linux/dax.h>
 #include <linux/cleancache.h>
+#include <linux/hie.h>
 #include <linux/uaccess.h>
 
 #include <linux/kthread.h>
@@ -903,6 +904,10 @@ static void ext4_put_super(struct super_block *sb)
 	int aborted = 0;
 	int i, err;
 
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2018-11-26 add for ext4 async discard suppot
+	destroy_discard_cmd_control(sbi);
+#endif
 	ext4_unregister_li_request(sb);
 	ext4_quota_off_umount(sb);
 
@@ -1105,9 +1110,7 @@ void ext4_clear_inode(struct inode *inode)
 		jbd2_free_inode(EXT4_I(inode)->jinode);
 		EXT4_I(inode)->jinode = NULL;
 	}
-#ifdef CONFIG_EXT4_FS_ENCRYPTION
-	fscrypt_put_encryption_info(inode, NULL);
-#endif
+	fscrypt_put_encryption_info(inode);
 }
 
 static struct inode *ext4_nfs_get_inode(struct super_block *sb,
@@ -1227,7 +1230,8 @@ static int ext4_set_context(struct inode *inode, const void *ctx, size_t len,
 			ext4_clear_inode_state(inode,
 					EXT4_STATE_MAY_INLINE_DATA);
 			/*
-			 * Update inode->i_flags - e.g. S_DAX may get disabled
+			 * Update inode->i_flags - S_ENCRYPTED will be enabled,
+			 * S_DAX may be disabled
 			 */
 			ext4_set_inode_flags(inode);
 		}
@@ -1252,7 +1256,10 @@ retry:
 				    ctx, len, 0);
 	if (!res) {
 		ext4_set_inode_flag(inode, EXT4_INODE_ENCRYPT);
-		/* Update inode->i_flags - e.g. S_DAX may get disabled */
+		/*
+		 * Update inode->i_flags - S_ENCRYPTED will be enabled,
+		 * S_DAX may be disabled
+		 */
 		ext4_set_inode_flags(inode);
 		res = ext4_mark_inode_dirty(handle, inode);
 		if (res)
@@ -1272,24 +1279,13 @@ static bool ext4_dummy_context(struct inode *inode)
 	return DUMMY_ENCRYPTION_ENABLED(EXT4_SB(inode->i_sb));
 }
 
-static unsigned ext4_max_namelen(struct inode *inode)
-{
-	return S_ISLNK(inode->i_mode) ? inode->i_sb->s_blocksize :
-		EXT4_NAME_LEN;
-}
-
 static const struct fscrypt_operations ext4_cryptops = {
 	.key_prefix		= "ext4:",
 	.get_context		= ext4_get_context,
 	.set_context		= ext4_set_context,
 	.dummy_context		= ext4_dummy_context,
-	.is_encrypted		= ext4_encrypted_inode,
 	.empty_dir		= ext4_empty_dir,
-	.max_namelen		= ext4_max_namelen,
-};
-#else
-static const struct fscrypt_operations ext4_cryptops = {
-	.is_encrypted		= ext4_encrypted_inode,
+	.max_namelen		= EXT4_NAME_LEN,
 };
 #endif
 
@@ -1393,6 +1389,10 @@ enum {
 	Opt_nomblk_io_submit, Opt_block_validity, Opt_noblock_validity,
 	Opt_inode_readahead_blks, Opt_journal_ioprio,
 	Opt_dioread_nolock, Opt_dioread_lock,
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2018-11-26 add for ext4 async discard suppot
+	Opt_async_discard, Opt_noasync_discard,
+#endif
 	Opt_discard, Opt_nodiscard, Opt_init_itable, Opt_noinit_itable,
 	Opt_max_dir_size_kb, Opt_nojournal_checksum, Opt_nombcache,
 };
@@ -1472,6 +1472,11 @@ static const match_table_t tokens = {
 	{Opt_dioread_lock, "dioread_lock"},
 	{Opt_discard, "discard"},
 	{Opt_nodiscard, "nodiscard"},
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2018-11-26 add for ext4 async discard suppot
+	{Opt_async_discard, "async_discard"},
+	{Opt_noasync_discard, "noasync_discard"},
+#endif
 	{Opt_init_itable, "init_itable=%u"},
 	{Opt_init_itable, "init_itable"},
 	{Opt_noinit_itable, "noinit_itable"},
@@ -1613,6 +1618,11 @@ static const struct mount_opts {
 	 MOPT_EXT4_ONLY | MOPT_SET},
 	{Opt_dioread_lock, EXT4_MOUNT_DIOREAD_NOLOCK,
 	 MOPT_EXT4_ONLY | MOPT_CLEAR},
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2018-11-26 add for ext4 async discard suppot
+	{Opt_async_discard, EXT4_MOUNT_ASYNC_DISCARD, MOPT_SET},
+	{Opt_noasync_discard, EXT4_MOUNT_ASYNC_DISCARD, MOPT_CLEAR},
+#endif
 	{Opt_discard, EXT4_MOUNT_DISCARD, MOPT_SET},
 	{Opt_nodiscard, EXT4_MOUNT_DISCARD, MOPT_CLEAR},
 	{Opt_delalloc, EXT4_MOUNT_DELALLOC,
@@ -3514,7 +3524,7 @@ static void ext4_set_resv_clusters(struct super_block *sb)
 
 	atomic64_set(&sbi->s_resv_clusters, resv_clusters);
 }
-
+extern unsigned int sysctl_ext4_async_discard_enable;
 static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct dax_device *dax_dev = fs_dax_get_by_bdev(sb->s_bdev);
@@ -3710,7 +3720,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	if (!parse_options((char *) data, sb, &journal_devnum,
 			   &journal_ioprio, 0))
 		goto failed_mount;
-
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2019-02-15 add for ext4 async discard suppot
+	if (sysctl_ext4_async_discard_enable && test_opt(sb,DISCARD)) {
+        clear_opt(sb, DISCARD);
+        ext4_msg(sb, KERN_WARNING, "mount option discard/async_discard conflict, use async_discard default");        
+    }
+#endif
 	if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA) {
 		printk_once(KERN_WARNING "EXT4-fs: Warning: mounting "
 			    "with data=journal disables delayed "
@@ -4149,7 +4165,9 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_op = &ext4_sops;
 	sb->s_export_op = &ext4_export_ops;
 	sb->s_xattr = ext4_xattr_handlers;
+#ifdef CONFIG_EXT4_FS_ENCRYPTION
 	sb->s_cop = &ext4_cryptops;
+#endif
 #ifdef CONFIG_QUOTA
 	sb->dq_op = &ext4_quota_operations;
 	if (ext4_has_feature_quota(sb))
@@ -4439,7 +4457,12 @@ no_journal:
 	} else
 		descr = "out journal";
 
-	if (test_opt(sb, DISCARD)) {
+	if (test_opt(sb, DISCARD) 
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2019-02-16 add for ext4 async discard suppot
+        || sysctl_ext4_async_discard_enable
+#endif
+    ) {
 		struct request_queue *q = bdev_get_queue(sb->s_bdev);
 		if (!blk_queue_discard(q))
 			ext4_msg(sb, KERN_WARNING,
@@ -4463,6 +4486,16 @@ no_journal:
 	ratelimit_state_init(&sbi->s_msg_ratelimit_state, 5 * HZ, 10);
 
 	kfree(orig_data);
+#if defined(VENDOR_EDIT) && defined(CONFIG_EXT4_ASYNC_DISCARD_SUPPORT)
+//yh@PSW.BSP.Storage.EXT4, 2018-11-26 add for ext4 async discard suppot
+	if (sysctl_ext4_async_discard_enable) {
+		sbi->interval_time = DEF_IDLE_INTERVAL;
+		err = create_discard_cmd_control(sbi);
+		if (err)
+			ext4_msg(sb, KERN_ERR, "mount creat async discard thread fail");
+    }
+	ext4_update_time(sbi);
+#endif
 	return 0;
 
 cantfind_ext4:
@@ -5925,6 +5958,44 @@ static struct file_system_type ext4_fs_type = {
 };
 MODULE_ALIAS_FS("ext4");
 
+#ifdef CONFIG_EXT4_ENCRYPTION
+int ext4_set_bio_ctx(struct inode *inode,
+	struct bio *bio)
+{
+	return fscrypt_set_bio_ctx(inode, bio);
+}
+
+static int __ext4_set_bio_ctx(struct inode *inode,
+	struct bio *bio)
+{
+	if (inode->i_sb->s_magic != EXT4_SUPER_MAGIC)
+		return -EINVAL;
+
+	return fscrypt_set_bio_ctx(inode, bio);
+}
+
+static int __ext4_key_payload(struct bio_crypt_ctx *ctx,
+	const unsigned char **key)
+{
+	if (ctx->bc_sb->s_magic != EXT4_SUPER_MAGIC)
+		return -EINVAL;
+
+	return fscrypt_key_payload(ctx, key);
+}
+
+struct hie_fs ext4_hie = {
+	.name = "ext4",
+	.key_payload = __ext4_key_payload,
+	.set_bio_context = __ext4_set_bio_ctx,
+	.priv = NULL,
+};
+#else
+int ext4_set_bio_ctx(struct inode *inode, struct bio *bio)
+{
+	return 0;
+}
+#endif
+
 /* Shared across all ext4 file systems */
 wait_queue_head_t ext4__ioend_wq[EXT4_WQ_HASH_SZ];
 
@@ -5969,6 +6040,10 @@ static int __init ext4_init_fs(void)
 	err = register_filesystem(&ext4_fs_type);
 	if (err)
 		goto out;
+
+#ifdef CONFIG_EXT4_ENCRYPTION
+	hie_register_fs(&ext4_hie);
+#endif
 
 	return 0;
 out:
