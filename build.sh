@@ -22,7 +22,6 @@ PATH="${PWD}/clang/bin:${PATH}:${PWD}/los-4.9-32/bin:${PATH}:${PWD}/los-4.9-64/b
 make -j$(nproc --all) O=out \
                       ARCH=arm64 \
                       CC="clang" \
-                      LD=ld.bfd \
                       CLANG_TRIPLE=aarch64-linux-gnu- \
                       CROSS_COMPILE="${PWD}/los-4.9-64/bin/aarch64-linux-android-" \
                       CROSS_COMPILE_ARM32="${PWD}/los-4.9-32/bin/arm-linux-androideabi-" \
